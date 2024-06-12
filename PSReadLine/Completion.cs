@@ -771,7 +771,7 @@ namespace Microsoft.PowerShell
 
         private bool IsDoneWithCompletions(CompletionResult currentCompletion, PSKeyInfo nextKey)
         {
-            return nextKey == Keys.Space
+            return (nextKey == Keys.Space && ! currentCompletion.CompletionText.Contains(' '))
                 || nextKey == Keys.Enter
                 || KeysEndingCompletion.TryGetValue(currentCompletion.ResultType, out var doneKeys)
                    && doneKeys.Contains(nextKey);
@@ -952,45 +952,43 @@ namespace Microsoft.PowerShell
                     string unambiguousText = GetUnambiguousPrefix(menu.MenuItems, out ambiguous);
                     int userComplPos = unambiguousText.IndexOf(userCompletionText, StringComparison.OrdinalIgnoreCase);
 
-                    // ... If found - advance IncrementalCompletion ...
-                    if (unambiguousText.Length > 0 && userComplPos >= 0 &&
+                    // Obtain all the menu items beginning with unambigousText, so we can count them.
+                    var unambiguousMenuItems = menu.MenuItems.Where(item =>
+                        item.CompletionText
+                            .Trim('\'') // handles comparisons with items that have spaces in them (these auto receive quote wraps)
+                            .StartsWith(unambiguousText, StringComparison.OrdinalIgnoreCase)
+                    );
+                    int countUnambiguousItems = Enumerable.Count(unambiguousMenuItems);
+
+                    // If there is only 1 item, autoaccept it
+                    if (unambiguousText.Length > 0 && userComplPos >= 0 && countUnambiguousItems == 1 )
+                    {
+                        processingKeys = false;
+                        int cursorAdjustment = 0;
+
+                        var onlyCompletionResult = unambiguousMenuItems.First();
+                        userCompletionText = onlyCompletionResult.CompletionText;
+                        
+                        _current = userCompletionText.Length;
+                        // Append a slash if it's a filesystem container
+                        DoReplacementForCompletion(onlyCompletionResult, completions);
+                        _current -= cursorAdjustment;
+
+                        // Autoaccepts the single available option (otherwise need to press rightarrow/tab a second time manually)
+                        PrependQueuedKeys(Keys.RightArrow);
+                    }
+                    // For multiple items which are shorter length than the unambiguous text, autocomplete through the unambiguous text.
+                    else if (unambiguousText.Length > 0 && userComplPos >= 0 &&
                         unambiguousText.Length > (userComplPos + userCompletionText.Length))
                     {
-                        // Obtain all the menu items beginning with unambigousText, so we can count them.
-                        var unambiguousMenuItems = menu.MenuItems.Where(item => item.CompletionText.StartsWith(unambiguousText));
-                        // If there is only 1 item, and it is a container, then complete it and append the directory separator.
-                        if ( Enumerable.Count(unambiguousMenuItems) == 1 )
-                        {
-                            processingKeys = false;
-                            int cursorAdjustment = 0;
-                            var onlyResult = unambiguousMenuItems.First();
-                            _current = onlyResult.CompletionText.Length;
-
-                            if (onlyResult.ResultType == CompletionResultType.ProviderContainer)
-                            {
-                                userCompletionText = GetUnquotedText(
-                                    GetReplacementTextForDirectory(onlyResult.CompletionText, ref cursorAdjustment),
-                                                                   consistentQuoting: false);
-                            }
-                            else
-                            {
-                                userCompletionText = GetUnquotedText(onlyResult, consistentQuoting: false);
-                            }
-                            _current -= cursorAdjustment;
-                            // If Tabbing into a container (directory), then repeat tab for a menu on its contents (faster navigation).
-                            PrependQueuedKeys(nextKey);
-                        }
-                        else
-                        {
-                            userCompletionText = unambiguousText.Substring(userComplPos);
+                        userCompletionText = unambiguousText.Substring(userComplPos);
                             _current = completions.ReplacementIndex +
                                        FindUserCompletionTextPosition(menu.MenuItems[menu.CurrentSelection], userCompletionText) +
                                        userCompletionText.Length;
                             Render();
                             Ding();
-                        }
                     }
-                    // ... if no - usual Tab behaviour
+                    // For multiple items and only ambiguous text remaining, tab will cycle through the available choices.
                     else
                     {
                         menu.MoveN(1);
